@@ -1,4 +1,4 @@
-modules to be installed:
+Modules to be installed:
 
 1. Python 3.6 or higher
 2. pip install streamlit
@@ -12,6 +12,9 @@ modules to be installed:
 10. pip install plotly
 11. pip install flask
 
-finally run the final code in the terminal by, streamlit run final-code.py
+Finally run the final code in the terminal by, streamlit run final-code.py
 
 If you encounter errors with share_location or check_crowd_density, ensure a Flask backend is running at http://127.0.0.1:5000.
+
+
+Else use,  install r-requirements.txt to install all requirements.
