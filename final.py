@@ -963,8 +963,8 @@ def main():
             else:
                 st.warning("Please enter a User ID to update location.")
 
-            # Suggest best stall button
-            if user_id and st.button("Suggest Best Stall", key="suggest_stall_button", help="Get a recommendation based on crowd and interests", class_="suggest-button"):
+            # Suggest best stall button (fixed)
+            if user_id and st.button("Suggest Best Stall", key="suggest_stall_button", help="Get a recommendation based on crowd and interests"):
                 suggest_best_stall(user_id)
 
             # Check crowd density
