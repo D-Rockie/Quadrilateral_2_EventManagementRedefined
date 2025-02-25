@@ -690,7 +690,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    st.markdown('<div class="banner"><h1>EventHub</h1><p>Your All-in-One Event Experience</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="banner"><h1>Event Management Redefined</h1><p>Redefining your experience</p></div>', unsafe_allow_html=True)
 
     # Initialize session state for navigation and other states
     if 'page' not in st.session_state:
