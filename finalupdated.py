@@ -8,7 +8,7 @@ import logging
 from textblob import TextBlob
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 from streamlit_option_menu import option_menu
 from streamlit_folium import folium_static
@@ -97,6 +97,12 @@ def initialize_csv():
     if not os.path.exists(STALLS_FILE):
         pd.DataFrame(columns=["user_id", "stall_name", "latitude", "longitude"]).to_csv(STALLS_FILE, index=False)
         logger.info("Initialized stalls CSV file.")
+    if not os.path.exists("user_interests.csv"):
+        pd.DataFrame(columns=["id", "name", "email", "interests"]).to_csv("user_interests.csv", index=False)
+        logger.info("Initialized user interests CSV file.")
+    if not os.path.exists("user_id_interests.csv"):
+        pd.DataFrame(columns=["id", "interests"]).to_csv("user_id_interests.csv", index=False)
+        logger.info("Initialized user ID and interests CSV file.")
 
 # --- Feedback Functions ---
 def load_feedback():
@@ -209,6 +215,11 @@ def admin_dashboard():
     ax.pie(rating_counts, labels=rating_counts.index, autopct='%1.1f%%', startangle=90, colors=["#ff9999","#66b3ff","#99ff99","#ffcc99","#c2c2f0"])
     ax.axis('equal')
     st.pyplot(fig)
+    
+    # Add button to extract user IDs and interests to CSV
+    if st.button("Export User IDs and Interests to CSV"):
+        extract_user_id_interests_to_csv()
+        st.success("User IDs and interests exported to user_id_interests.csv!")
 
 # --- Location and Crowd Functions ---
 def share_location(user_id, latitude, longitude, is_stall_owner=False, stall_name=""):
@@ -311,6 +322,17 @@ def add_user(name, email, interests):
     conn.commit()
     user_id = cursor.lastrowid
     conn.close()
+    
+    # Save to CSV
+    user_data = pd.DataFrame([{"id": user_id, "name": name, "email": email, "interests": ",".join(interests)}])
+    if os.path.exists("user_interests.csv"):
+        existing_data = pd.read_csv("user_interests.csv")
+        updated_data = pd.concat([existing_data, user_data], ignore_index=True)
+    else:
+        updated_data = user_data
+    updated_data.to_csv("user_interests.csv", index=False)
+    logger.info(f"User interests for {name} (ID: {user_id}) saved to CSV and database.")
+    
     return user_id
 
 def get_user(user_id):
@@ -410,7 +432,7 @@ def calculate_trend_scores(user_id, decay_rate=0.02):
     cursor = conn.cursor()
     # Use id as a fallback if registration_date is missing
     cursor.execute("""
-        SELECT e.category, r.registration_date 
+        SELECT e.category, r.registration_date, r.id 
         FROM registrations r 
         JOIN events e ON r.event_id = e.id 
         WHERE r.user_id = ?
@@ -423,6 +445,16 @@ def calculate_trend_scores(user_id, decay_rate=0.02):
     
     category_scores = {}
     current_date = datetime.now()
+    
+    # Get the range of registration IDs to estimate time, handling empty or invalid IDs
+    booking_ids = [booking['id'] for booking in bookings if 'id' in booking and booking['id'] is not None]
+    if not booking_ids:
+        return {}  # No valid IDs, return empty scores
+    
+    min_id = min(booking_ids)
+    max_id = max(booking_ids)
+    id_range = max_id - min_id if max_id > min_id else 1  # Avoid division by zero
+    
     for booking in bookings:
         # Handle case where registration_date might be None or missing
         reg_date_str = booking["registration_date"]
@@ -430,13 +462,30 @@ def calculate_trend_scores(user_id, decay_rate=0.02):
             try:
                 reg_date = datetime.strptime(reg_date_str, "%Y-%m-%d %H:%M:%S")
             except (ValueError, TypeError):
-                # Fallback: Use a default date (e.g., 30 days ago) or skip
-                reg_date = current_date - timedelta(days=30)  # Default to 30 days ago if date is invalid
+                # Fallback: Estimate date based on registration ID
+                if 'id' in booking and booking['id'] is not None:
+                    if id_range > 0:
+                        # Assume IDs are sequential and spread over a reasonable time (e.g., 90 days)
+                        days_ago = int((max_id - booking['id']) * 90 / id_range)  # Spread over 90 days
+                        reg_date = current_date - timedelta(days=days_ago)
+                    else:
+                        reg_date = current_date - timedelta(days=30)  # Default to 30 days ago if no range
+                else:
+                    reg_date = current_date - timedelta(days=30)  # Default if ID is missing
         else:
-            # If registration_date is missing, use a fallback (e.g., 30 days ago)
-            reg_date = current_date - timedelta(days=30)
+            # If registration_date is missing, estimate based on ID
+            if 'id' in booking and booking['id'] is not None:
+                if id_range > 0:
+                    days_ago = int((max_id - booking['id']) * 90 / id_range)  # Spread over 90 days
+                    reg_date = current_date - timedelta(days=days_ago)
+                else:
+                    reg_date = current_date - timedelta(days=30)  # Default to 30 days ago
+            else:
+                reg_date = current_date - timedelta(days=30)  # Default if ID is missing
         
         days_ago = (current_date - reg_date).days
+        if days_ago < 0:  # Ensure days_ago is not negative (future dates)
+            days_ago = 0
         weight = math.exp(-decay_rate * days_ago)  # Exponential decay
         category = booking["category"]
         category_scores[category] = category_scores.get(category, 0) + weight
@@ -534,6 +583,10 @@ def main():
 
     st.markdown('<div class="banner"><h1>EventHub</h1><p>Your All-in-One Event Experience</p></div>', unsafe_allow_html=True)
 
+    # Initialize session state for navigation
+    if 'page' not in st.session_state:
+        st.session_state.page = "Home"
+
     # Sidebar Navigation with Option Menu
     with st.sidebar:
         st.markdown("<h2>Explore EventHub</h2>", unsafe_allow_html=True)
@@ -549,12 +602,16 @@ def main():
                 "nav-link-selected": {"background-color": "#3498db"},
             }
         )
+        # Sync session state with sidebar selection
+        if page != st.session_state.page:
+            st.session_state.page = page
+            st.rerun()
 
     if 'user_id' not in st.session_state:
         st.session_state.user_id = None
 
     with st.container():
-        if page == "Home":
+        if st.session_state.page == "Home":
             st.markdown("<h2 class='section-title'>Welcome to EventHub</h2>", unsafe_allow_html=True)
             st.write("Discover events, connect with others, and manage your experiences seamlessly.")
             st.markdown("<h3>Log In</h3>", unsafe_allow_html=True)
@@ -566,7 +623,9 @@ def main():
                     st.success(f"Logged in as {user['name']}!")
                 else:
                     st.error("Invalid User ID. Please register first.")
-            st.button("New User? Register Here", key="to_register")
+            if st.button("New User? Register Here", key="register_button"):
+                st.session_state.page = "Register"  # Set page to "Register"
+                st.rerun()  # Rerun to navigate to the Register page
             st.markdown("<h3>Featured Events</h3>", unsafe_allow_html=True)
             events = get_all_events()
             if events:
@@ -576,7 +635,7 @@ def main():
             else:
                 st.write("No events available yet.")
 
-        elif page == "Register":
+        elif st.session_state.page == "Register":
             st.markdown("<h2 class='section-title'>Join EventHub</h2>", unsafe_allow_html=True)
             with st.form("register_form"):
                 st.subheader("Create Your Profile")
@@ -591,8 +650,10 @@ def main():
                         user_id = add_user(name, email, interests)
                         st.success(f"Registered successfully! Your User ID is {user_id}. Log in on the Home page.")
                         st.session_state.user_id = user_id
+                        st.session_state.page = "Home"  # Return to Home after registration
+                        st.rerun()
 
-        elif page == "All Events":
+        elif st.session_state.page == "All Events":
             st.markdown("<h2 class='section-title'>Upcoming Events</h2>", unsafe_allow_html=True)
             st.write("Browse all events happening soon.")
             events = get_all_events()
@@ -602,7 +663,7 @@ def main():
             else:
                 st.write("No events available yet.")
 
-        elif page == "My Events":
+        elif st.session_state.page == "My Events":
             st.markdown("<h2 class='section-title'>My Events</h2>", unsafe_allow_html=True)
             if not st.session_state.user_id:
                 st.warning("Please log in first.")
@@ -614,7 +675,7 @@ def main():
                 else:
                     st.write("You haven’t registered for any events yet.")
 
-        elif page == "Recommendations":
+        elif st.session_state.page == "Recommendations":
             st.markdown("<h2 class='section-title'>Tailored for You</h2>", unsafe_allow_html=True)
             if not st.session_state.user_id:
                 st.warning("Please log in first.")
@@ -649,7 +710,7 @@ def main():
                     else:
                         st.write("No trend-based recommendations yet. Register for more events to see suggestions!")
 
-        elif page == "Add Event":
+        elif st.session_state.page == "Add Event":
             st.markdown("<h2 class='section-title'>Create an Event</h2>", unsafe_allow_html=True)
             with st.form("event_form"):
                 st.subheader("Event Details")
@@ -672,18 +733,19 @@ def main():
                     else:
                         add_event(title, str(date), venue, description, category, user_id)
                         st.success("Event added successfully!")
+                        st.session_state.page = "Home"  # Return to Home after adding an event
                         st.rerun()
 
-        elif page == "Feedback":
+        elif st.session_state.page == "Feedback":
             submit_feedback()
 
-        elif page == "Performance Insights":
+        elif st.session_state.page == "Performance Insights":
             analyze_event_performance()
 
-        elif page == "Stall Suggestions":
+        elif st.session_state.page == "Stall Suggestions":
             recommend_stalls()
 
-        elif page == "Crowd Monitor":
+        elif st.session_state.page == "Crowd Monitor":
             st.markdown("<h2 class='section-title'>Crowd Monitor</h2>", unsafe_allow_html=True)
             user_id = st.text_input("User ID", placeholder="Enter your ID")
             is_stall_owner = st.checkbox("I’m a Stall Owner")
@@ -706,8 +768,75 @@ def main():
                 folium.Marker([latitude, longitude], popup=stall_name or f"User {user_id}", icon=folium.Icon(color="blue")).add_to(m)
             folium_static(m, width=600, height=400)
 
-        elif page == "Admin Dashboard":
-            admin_dashboard()
+        elif st.session_state.page == "Admin Dashboard":
+            st.markdown("<h2 class='section-title'>Admin Dashboard</h2>", unsafe_allow_html=True)
+            password = st.text_input("Admin Password", type="password")
+            if password != "admin123":
+                st.warning("Incorrect password!")
+                return
+            df = load_feedback()
+            if df.empty:
+                st.write("No feedback to display.")
+                return
+            st.subheader("Feedback Overview")
+            selected_stall = st.selectbox("Select Stall", df["stall"].dropna().unique())
+            stall_feedback = df[df["stall"] == selected_stall]
+            st.write(stall_feedback)
+            reply_option = st.radio("Do you want to reply to feedback?", ["No", "Yes"])
+            if reply_option == "Yes":
+                feedback_options = stall_feedback[stall_feedback["response"].isna() | (stall_feedback["response"] == "")]
+                if feedback_options.empty:
+                    st.write("No feedback available to reply.")
+                    return
+                selected_feedback = st.selectbox("Select feedback to reply", feedback_options.index)
+                row = df.loc[selected_feedback]
+                st.subheader(f"Feedback from {row['name']} ({row['stall']})")
+                st.write(row["feedback"])
+                response = st.text_area("Your Response")
+                if st.button("Submit Response"):
+                    df.at[selected_feedback, "response"] = response
+                    save_feedback(df)
+                    st.success("Response submitted!")
+                    st.rerun()
+            st.subheader("Delete Feedback")
+            delete_option = st.radio("Do you want to delete a feedback?", ["No", "Yes"])
+            if delete_option == "Yes":
+                delete_feedback = st.selectbox("Select feedback to delete", stall_feedback.index)
+                if st.button("Delete Feedback"):
+                    df = df.drop(index=delete_feedback)
+                    save_feedback(df)
+                    st.success("Feedback deleted successfully!")
+                    st.rerun()
+            st.subheader("Analytics")
+            st.write(f"Total feedback received for {selected_stall}: {len(stall_feedback)}")
+            rating_counts = stall_feedback["rating"].value_counts().sort_index()
+            fig, ax = plt.subplots()
+            ax.pie(rating_counts, labels=rating_counts.index, autopct='%1.1f%%', startangle=90, colors=["#ff9999","#66b3ff","#99ff99","#ffcc99","#c2c2f0"])
+            ax.axis('equal')
+            st.pyplot(fig)
+            
+            # Add button to extract user IDs and interests to CSV
+            if st.button("Export User IDs and Interests to CSV"):
+                extract_user_id_interests_to_csv()
+                st.success("User IDs and interests exported to user_id_interests.csv!")
+
+# --- Database Utility Functions ---
+def extract_user_id_interests_to_csv():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, interests FROM users")
+    users = cursor.fetchall()
+    conn.close()
+    
+    # Create a list of dictionaries for the DataFrame
+    user_data = [{"id": row["id"], "interests": row["interests"]} for row in users]
+    
+    # Create a DataFrame
+    df = pd.DataFrame(user_data)
+    
+    # Save to CSV
+    df.to_csv("user_id_interests.csv", index=False)
+    logger.info("User IDs and interests extracted and saved to user_id_interests.csv")
 
 if __name__ == "__main__":
     main()
