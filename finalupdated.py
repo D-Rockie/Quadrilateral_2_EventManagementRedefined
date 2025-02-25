@@ -13,6 +13,7 @@ import math
 from streamlit_option_menu import option_menu
 from streamlit_folium import folium_static
 import folium
+import csv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -104,27 +105,34 @@ def initialize_csv():
         pd.DataFrame(columns=["id", "interests"]).to_csv("user_id_interests.csv", index=False)
         logger.info("Initialized user ID and interests CSV file.")
 
-# --- Feedback Functions ---
 def load_feedback():
     if os.path.exists(FEEDBACK_FILE):
         return pd.read_csv(FEEDBACK_FILE)
-    return pd.DataFrame(columns=["name", "feedback", "stall", "rating", "response"])
+    return pd.DataFrame(columns=["name", "feedback", "event", "rating", "response"])
 
 def save_feedback(df):
     df.to_csv(FEEDBACK_FILE, index=False)
+
+def load_events():
+    """Load event names from a CSV file."""
+    df = pd.read_csv("stalls_categories.csv")  # Ensure the CSV has a column named 'event_name'
+    return df["title"].tolist()
 
 def submit_feedback():
     st.markdown("<h2 class='section-title'>Share Your Feedback</h2>", unsafe_allow_html=True)
     name = st.text_input("Your Name", placeholder="Enter your name")
     feedback = st.text_area("Feedback", placeholder="What did you think?")
-    stall = st.selectbox("Stall", STALLS)
+    
+    EVENTS = load_events()  # Load event names from CSV
+    event = st.selectbox("Event", EVENTS)  # Dropdown with event names
+    
     rating = st.slider("Rating", 1, 5, 3, help="Rate from 1 (poor) to 5 (excellent)")
     if st.button("Submit Feedback"):
         df = load_feedback()
-        df = pd.concat([df, pd.DataFrame([{"name": name, "feedback": feedback, "stall": str(stall), "rating": rating, "response": ""}])], ignore_index=True)
+        df = pd.concat([df, pd.DataFrame([{"name": name, "feedback": feedback, "event": str(event), "rating": rating, "response": ""}])], ignore_index=True)
         save_feedback(df)
         st.success("Feedback submitted successfully!")
-        logger.info(f"Feedback submitted for {stall} by {name}")
+        logger.info(f"Feedback submitted for {event} by {name}")
 
 def analyze_event_performance():
     st.markdown("<h2 class='section-title'>Event Insights</h2>", unsafe_allow_html=True)
@@ -132,8 +140,8 @@ def analyze_event_performance():
     if df.empty:
         st.write("No feedback available.")
         return
-    stall_selected = st.selectbox("Select Stall to Analyze", df["stall"].dropna().unique())
-    stall_feedback = df[df["stall"] == stall_selected]
+    stall_selected = st.selectbox("Select event to Analyze", df["event"].dropna().unique())
+    stall_feedback = df[df["event"] == stall_selected]
     feedback_text = " ".join(stall_feedback["feedback"].dropna().tolist())
     try:
         response = co.generate(model="command", prompt=f"Analyze feedback for {stall_selected} and summarize event performance: {feedback_text}")
@@ -146,13 +154,13 @@ def analyze_event_performance():
     st.write(prediction)
 
 def recommend_stalls():
-    st.markdown("<h2 class='section-title'>Stall Recommendations</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 class='section-title'>event Recommendations</h2>", unsafe_allow_html=True)
     df = load_feedback()
     if df.empty:
         st.write("No feedback available to generate recommendations.")
         return
-    user_interest = st.selectbox("Select a stall you are interested in", df["stall"].dropna().unique())
-    feedback_text = " ".join(df[df["stall"] == user_interest]["feedback"].dropna().tolist())
+    user_interest = st.selectbox("Select a event you are interested in", df["event"].dropna().unique())
+    feedback_text = " ".join(df[df["event"] == user_interest]["feedback"].dropna().tolist())
     if not feedback_text:
         st.write(f"No feedback available for {user_interest} to generate recommendations.")
         return
@@ -166,7 +174,7 @@ def recommend_stalls():
     except Exception as e:
         recommendation = f"Error fetching recommendation: {str(e)}"
         logger.error(f"Cohere error in stall recommendation: {str(e)}")
-    st.subheader("Recommended Stalls")
+    st.subheader("Recommended event")
     st.write(recommendation)
 
 def admin_dashboard():
@@ -180,8 +188,8 @@ def admin_dashboard():
         st.write("No feedback to display.")
         return
     st.subheader("Feedback Overview")
-    selected_stall = st.selectbox("Select Stall", df["stall"].dropna().unique())
-    stall_feedback = df[df["stall"] == selected_stall]
+    selected_stall = st.selectbox("Select event", df["event"].dropna().unique())
+    stall_feedback = df[df["event"] == selected_stall]
     st.write(stall_feedback)
     reply_option = st.radio("Do you want to reply to feedback?", ["No", "Yes"])
     if reply_option == "Yes":
@@ -346,13 +354,32 @@ def get_user(user_id):
 def add_event(title, date, venue, description, category, created_by):
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # Insert into database
     cursor.execute("INSERT INTO events (title, date, venue, description, category, created_by) VALUES (?, ?, ?, ?, ?, ?)",
                    (title, date, venue, description, category, created_by))
     conn.commit()
     event_id = cursor.lastrowid
     conn.close()
-    logger.info(f"Event '{title}' (ID: {event_id}) added by user {created_by}")
+    
+    # Append event details to CSV file
+    csv_file = "stalls_categories.csv"
+    file_exists = os.path.isfile(csv_file)
+
+    with open(csv_file, mode="a", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        
+        # Write header if file is newly created
+        if not file_exists:
+            writer.writerow(["event_id", "title", "date", "venue", "description", "category", "created_by"])
+        
+        # Write the new event data
+        writer.writerow([event_id, title, date, venue, description, category, created_by])
+    
+    logger.info(f"Event '{title}' (ID: {event_id}) added by user {created_by} to database and CSV file")
+    
     return event_id
+
 
 def get_all_events():
     conn = get_db_connection()
