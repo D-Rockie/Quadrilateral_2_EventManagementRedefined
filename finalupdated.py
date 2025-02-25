@@ -463,7 +463,7 @@ def get_trend_based_events(user_id):
     return recommendations
 
 # --- UI Display Function ---
-def display_event(event, show_register=False, show_delete=False, user_id=None, creator_id=None):
+def display_event(event, show_register=False, show_delete=False, user_id=None, creator_id=None, page=None):
     with st.container():
         st.markdown(f"""
             <div class="event-card">
@@ -477,13 +477,17 @@ def display_event(event, show_register=False, show_delete=False, user_id=None, c
         col1, col2 = st.columns([3, 1])
         with col2:
             if show_register and user_id:
-                if st.button("Register", key=f"reg_{event['id']}"):
+                # Use page name and event_id to ensure unique keys
+                unique_key = f"reg_{page}_{event['id']}" if page else f"reg_{event['id']}"
+                if st.button("Register", key=unique_key):
                     if register_for_event(user_id, event['id']):
                         st.success(f"Registered for {event['title']}!")
                     else:
                         st.warning("You’re already registered for this event.")
             if show_delete and user_id and user_id == creator_id:
-                if st.button("Delete", key=f"del_{event['id']}"):
+                # Use page name and event_id for unique delete keys as well
+                unique_key = f"del_{page}_{event['id']}" if page else f"del_{event['id']}"
+                if st.button("Delete", key=unique_key):
                     if delete_event(event['id'], user_id):
                         st.success(f"Event '{event['title']}' deleted successfully!")
                         st.rerun()
@@ -568,7 +572,7 @@ def main():
             if events:
                 st.write("Explore our top picks!")
                 for event in events[:3]:
-                    display_event(event, show_register=True, user_id=st.session_state.user_id, creator_id=event['created_by'])
+                    display_event(event, show_register=True, user_id=st.session_state.user_id, creator_id=event['created_by'], page="Home")
             else:
                 st.write("No events available yet.")
 
@@ -594,7 +598,7 @@ def main():
             events = get_all_events()
             if events:
                 for event in events:
-                    display_event(event, show_register=True, show_delete=True, user_id=st.session_state.user_id, creator_id=event['created_by'])
+                    display_event(event, show_register=True, show_delete=True, user_id=st.session_state.user_id, creator_id=event['created_by'], page="All_Events")
             else:
                 st.write("No events available yet.")
 
@@ -606,7 +610,7 @@ def main():
                 registrations = get_user_registrations(st.session_state.user_id)
                 if registrations:
                     for event in registrations:
-                        display_event(event, show_delete=True, user_id=st.session_state.user_id, creator_id=event['created_by'])
+                        display_event(event, show_delete=True, user_id=st.session_state.user_id, creator_id=event['created_by'], page="My_Events")
                 else:
                     st.write("You haven’t registered for any events yet.")
 
@@ -621,7 +625,7 @@ def main():
                     interest_events = get_interest_based_events(st.session_state.user_id)
                     if interest_events:
                         for event in interest_events:
-                            display_event(event, show_register=True, user_id=st.session_state.user_id, creator_id=event['created_by'])
+                            display_event(event, show_register=True, user_id=st.session_state.user_id, creator_id=event['created_by'], page="Recommendations_Interest")
                     else:
                         st.write("No interest-based recommendations yet.")
                 with tab2:
@@ -631,7 +635,7 @@ def main():
                         mood_events = get_mood_based_events(mood_input)
                         if mood_events:
                             for event in mood_events:
-                                display_event(event, show_register=True, user_id=st.session_state.user_id, creator_id=event['created_by'])
+                                display_event(event, show_register=True, user_id=st.session_state.user_id, creator_id=event['created_by'], page="Recommendations_Mood")
                         else:
                             st.write("No mood-based events available right now.")
                     else:
@@ -641,7 +645,7 @@ def main():
                     trend_events = get_trend_based_events(st.session_state.user_id)
                     if trend_events:
                         for event in trend_events:
-                            display_event(event, show_register=True, user_id=st.session_state.user_id, creator_id=event['created_by'])
+                            display_event(event, show_register=True, user_id=st.session_state.user_id, creator_id=event['created_by'], page="Recommendations_Trend")
                     else:
                         st.write("No trend-based recommendations yet. Register for more events to see suggestions!")
 
