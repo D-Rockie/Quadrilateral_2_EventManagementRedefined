@@ -10,24 +10,24 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from streamlit_option_menu import option_menu
-from streamlit_folium import folium_static
-import folium
-import math  # Added for exponential decay in calculate_trend_scores
+from streamlit_folium import folium_static  # For displaying Folium maps in Streamlit
+import folium  # For creating maps
+import math  # For exponential decay in calculate_trend_scores
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # API setup
-COHERE_API_KEY = "RF13gvo9zsvPvfJYXz8cXEIylIiGWwkeyJQkxL34"
+COHERE_API_KEY = "RF13gvo9zsvPvfJYXz8cXEIylIiGWwkeyJQkxL34"  # Replace with your actual key
 co = cohere.Client(COHERE_API_KEY)
 
 # Constants
 CATEGORIES = ["Technology", "Music", "Sports", "Art", "Business", "Games", "Movies", "Food", "Products"]
 MOOD_MAPPING = {"positive": ["Sports", "Music", "Games"], "negative": ["Art"], "neutral": CATEGORIES}
 FEEDBACK_FILE = "feedback.csv"
-USER_LOCATIONS_FILE = "user_locations.csv"
-STALLS_FILE = "stalls.csv"
+USER_LOCATIONS_FILE = "user_locations.csv"  # Kept for legacy, but not used with SQLite
+STALLS_FILE = "stalls.csv"  # Kept for legacy fallback, but not used with SQLite
 BACKEND_URL = "http://127.0.0.1:5000"
 STALLS = ["Food Stall", "Tech Stall", "Merchandise Stall", "Game Stall"]
 
@@ -83,6 +83,22 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (event_id) REFERENCES events(id)
         )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS stalls (
+        user_id INTEGER PRIMARY KEY,
+        stall_name TEXT NOT NULL,
+        latitude REAL NOT NULL,
+        longitude REAL NOT NULL
+    )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS user_locations (
+        user_id INTEGER PRIMARY KEY,
+        latitude REAL NOT NULL,
+        longitude REAL NOT NULL,
+        timestamp TEXT NOT NULL
+    )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS stall_categories (
+        stall_name TEXT PRIMARY KEY,
+        category TEXT
+    )''')
     conn.commit()
     conn.close()
 
@@ -91,18 +107,15 @@ def initialize_csv():
     if not os.path.exists(FEEDBACK_FILE):
         pd.DataFrame(columns=["name", "feedback", "stall", "rating", "response"]).to_csv(FEEDBACK_FILE, index=False)
         logger.info("Initialized feedback CSV file.")
-    if not os.path.exists(USER_LOCATIONS_FILE):
-        pd.DataFrame(columns=["user_id", "latitude", "longitude", "timestamp"]).to_csv(USER_LOCATIONS_FILE, index=False)
-        logger.info("Initialized user locations CSV file.")
-    if not os.path.exists(STALLS_FILE):
-        pd.DataFrame(columns=["user_id", "stall_name", "latitude", "longitude"]).to_csv(STALLS_FILE, index=False)
-        logger.info("Initialized stalls CSV file.")
     if not os.path.exists("user_interests.csv"):
         pd.DataFrame(columns=["id", "name", "email", "interests"]).to_csv("user_interests.csv", index=False)
         logger.info("Initialized user interests CSV file.")
     if not os.path.exists("user_id_interests.csv"):
         pd.DataFrame(columns=["id", "interests"]).to_csv("user_id_interests.csv", index=False)
         logger.info("Initialized user ID and interests CSV file.")
+    if not os.path.exists("stall_people_count.csv"):
+        pd.DataFrame(columns=["stall_name", "people_count"]).to_csv("stall_people_count.csv", index=False)
+        logger.info("Initialized stall people count CSV file.")
 
 # --- Feedback Functions ---
 def load_feedback():
@@ -234,7 +247,7 @@ def share_location(user_id, latitude, longitude, is_stall_owner=False, stall_nam
             "is_stall_owner": is_stall_owner,
             "stall_name": stall_name if is_stall_owner else ""
         }
-        response = requests.post(f"{BACKEND_URL}/update_location", json=data, timeout=10)
+        response = requests.post(f"{BACKEND_URL}/save-location", json=data, timeout=10)  # Corrected to match backend endpoint
         if response.status_code == 200:
             st.success("Location shared successfully!")
             return True
@@ -252,11 +265,28 @@ def check_crowd_density():
             crowd_data = response.json()
             if "error" in crowd_data:
                 st.info(crowd_data["error"])
-                return
+                # Fallback: Show a default map with a message if no stalls are registered
+                default_lat, default_lon = 37.7749, -122.4194  # Default to San Francisco
+                st.markdown("### No Stalls Registered")
+                st.write("No stalls are currently registered. Please register a stall to see crowd density and map data.")
+                m = folium.Map(location=[default_lat, default_lon], zoom_start=13, tiles="OpenStreetMap")
+                folium.Marker(
+                    location=[default_lat, default_lon],
+                    popup="Default Location (No Stalls Registered)",
+                    icon=folium.Icon(color="gray", icon="info-sign")
+                ).add_to(m)
+                st.subheader("Default Map Location")
+                folium_static(m, width=700, height=500)
+                return None
+
+            logger.info(f"Crowd density data received from SQLite: {crowd_data}")  # Debug log
+
             st.markdown("### Crowd Levels")
             stall_names = []
             crowd_counts = []
             for stall, details in crowd_data.items():
+                if stall == "default":
+                    continue  # Skip default stall in display
                 stall_names.append(stall)
                 crowd_counts.append(details["crowd_count"])
                 crowd_level = details["crowd_level"].lower().replace(" ", "-")
@@ -267,6 +297,7 @@ def check_crowd_density():
                         <span><strong>{stall}</strong>: {details['crowd_level']} ({details['crowd_count']} people)</span>
                     </div>
                 """, unsafe_allow_html=True)
+
             fig = go.Figure(data=[
                 go.Bar(
                     x=stall_names,
@@ -289,12 +320,73 @@ def check_crowd_density():
                 showlegend=False
             )
             st.plotly_chart(fig, use_container_width=True)
+
+            # Map integration using folium with debugging
+            default_lat, default_lon = 37.7749, -122.4194  # Default to San Francisco
+            logger.info(f"Creating map with default location: {default_lat}, {default_lon}")
+            m = folium.Map(location=[default_lat, default_lon], zoom_start=13, tiles="OpenStreetMap")
+
+            # Check if crowd_data has the expected structure
+            if not crowd_data or not isinstance(crowd_data, dict):
+                st.error("Invalid crowd data format received from backend.")
+                logger.error(f"Invalid crowd data: {crowd_data}")
+                return None
+
+            # Add markers for each stall, skipping the default stall
+            has_markers = False
+            for stall, details in crowd_data.items():
+                if stall == "default":
+                    continue
+                try:
+                    lat = details.get("latitude", default_lat)
+                    lon = details.get("longitude", default_lon)
+                    crowd_count = details.get("crowd_count", 0)
+                    crowd_level = details.get("crowd_level", "Unknown")
+
+                    logger.info(f"Adding marker for {stall} at {lat}, {lon} with crowd level: {crowd_level}")
+
+                    color = {
+                        "Very Low": "green",
+                        "Low": "lightgreen",
+                        "Medium": "orange",
+                        "High": "red",
+                        "Very High": "darkred",
+                        "Unknown": "blue"
+                    }.get(crowd_level, "blue")
+
+                    folium.Marker(
+                        location=[lat, lon],
+                        popup=f"{stall}: {crowd_count} people ({crowd_level})",
+                        icon=folium.Icon(color=color, icon="info-sign")
+                    ).add_to(m)
+                    has_markers = True
+                except Exception as e:
+                    logger.error(f"Error adding marker for {stall}: {str(e)}")
+                    continue
+
+            if has_markers:
+                st.subheader("Stall Locations on Map")
+                try:
+                    folium_static(m, width=700, height=500)
+                    logger.info("Map rendered successfully.")
+                except Exception as e:
+                    st.error("Failed to render map: " + str(e))
+                    logger.error(f"Map rendering failed: {str(e)}")
+            else:
+                st.warning("No stall locations available to display on the map.")
+                logger.warning("No markers added to the map.")
+            return crowd_data  # Return data for potential further use
         else:
             st.error(f"Error fetching crowd density data. Status: {response.status_code}, Response: {response.text}")
+            return None
     except requests.RequestException as e:
         st.error(f"Network error: {str(e)}")
+        logger.error(f"Network error in crowd_density: {str(e)}")
+        return None
     except Exception as e:
         st.error(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error in crowd_density: {str(e)}")
+        return None
 
 def suggest_best_stall(user_id):
     try:
@@ -350,7 +442,7 @@ def add_user(name, email, interests):
     user_id = cursor.lastrowid
     conn.close()
     
-    # Save to CSV
+    # Save to CSV files
     user_data = pd.DataFrame([{"id": user_id, "name": name, "email": email, "interests": ",".join(interests)}])
     if os.path.exists("user_interests.csv"):
         existing_data = pd.read_csv("user_interests.csv")
@@ -358,8 +450,16 @@ def add_user(name, email, interests):
     else:
         updated_data = user_data
     updated_data.to_csv("user_interests.csv", index=False)
-    logger.info(f"User interests for {name} (ID: {user_id}) saved to CSV and database.")
     
+    user_id_interests = pd.DataFrame([{"id": user_id, "interests": ",".join(interests)}])
+    if os.path.exists("user_id_interests.csv"):
+        existing_id_data = pd.read_csv("user_id_interests.csv")
+        updated_id_data = pd.concat([existing_id_data, user_id_interests], ignore_index=True)
+    else:
+        updated_id_data = user_id_interests
+    updated_id_data.to_csv("user_id_interests.csv", index=False)
+    
+    logger.info(f"User interests for {name} (ID: {user_id}) saved to SQLite and CSV files.")
     return user_id
 
 def get_user(user_id):
