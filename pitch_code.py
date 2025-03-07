@@ -3,8 +3,6 @@ import streamlit as st
 import pandas as pd
 import os
 import requests
-import cohere
-import logging
 from textblob import TextBlob
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
@@ -14,14 +12,16 @@ from streamlit_folium import folium_static
 import folium
 import math
 import csv
+from groq import Groq
+import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# API setup
-COHERE_API_KEY = "RF13gvo9zsvPvfJYXz8cXEIylIiGWwkeyJQkxL34"
-co = cohere.Client(COHERE_API_KEY)
+# API setup with your Groq API key
+GROQ_API_KEY = "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"
+co = Groq(api_key=GROQ_API_KEY)
 
 # Constants
 CATEGORIES = ["Technology", "Music", "Sports", "Art", "Business", "Games", "Movies", "Food", "Products"]
@@ -150,6 +150,7 @@ def submit_feedback():
         st.success("Feedback submitted successfully!")
         logger.info(f"Feedback submitted for {event} by {name}")
 
+# Modified analyze_event_performance function
 def analyze_event_performance():
     st.markdown("<h2 class='section-title'>Event Insights</h2>", unsafe_allow_html=True)
     df = load_feedback()
@@ -160,15 +161,22 @@ def analyze_event_performance():
     stall_feedback = df[df["event"] == stall_selected]
     feedback_text = " ".join(stall_feedback["feedback"].dropna().tolist())
     try:
-        response = co.generate(model="command", prompt=f"Analyze feedback for {stall_selected} and summarize event performance: {feedback_text}")
-        prediction = response.generations[0].text
+        response = co.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[
+                {"role": "system", "content": "You are an analyst summarizing event performance based on feedback."},
+                {"role": "user", "content": f"Analyze feedback for {stall_selected} and summarize event performance: {feedback_text}"}
+            ]
+        )
+        prediction = response.choices[0].message.content
         logger.info(f"Generated performance prediction for {stall_selected}")
     except Exception as e:
         prediction = f"Error fetching prediction: {str(e)}"
-        logger.error(f"Cohere error in performance prediction: {str(e)}")
+        logger.error(f"Groq error in performance prediction: {str(e)}")
     st.subheader(f"Predicted Performance for {stall_selected}")
     st.write(prediction)
 
+# Modified recommend_stalls function
 def recommend_stalls():
     st.markdown("<h2 class='section-title'>Event Recommendations</h2>", unsafe_allow_html=True)
     df = load_feedback()
@@ -181,15 +189,18 @@ def recommend_stalls():
         st.write(f"No feedback available for {user_interest} to generate recommendations.")
         return
     try:
-        response = co.generate(
-            model="command",
-            prompt=f"Based on past feedback and event performance, suggest the best stalls for a user interested in {user_interest}. Feedback data: {feedback_text}"
+        response = co.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[
+                {"role": "system", "content": "You are a recommendation system suggesting stalls based on event feedback."},
+                {"role": "user", "content": f"Based on past feedback and event performance, suggest the best stalls for a user interested in {user_interest}. Feedback data: {feedback_text}"}
+            ]
         )
-        recommendation = response.generations[0].text
+        recommendation = response.choices[0].message.content
         logger.info(f"Generated stall recommendation for interest: {user_interest}")
     except Exception as e:
         recommendation = f"Error fetching recommendation: {str(e)}"
-        logger.error(f"Cohere error in stall recommendation: {str(e)}")
+        logger.error(f"Groq error in stall recommendation: {str(e)}")
     st.subheader("Recommended Event")
     st.write(recommendation)
 
@@ -411,7 +422,7 @@ def suggest_best_stall(user_id):
         st.error(f"Network error: {str(e)}")
         print(f"Network error details: {str(e)}")
 
-# --- Event Management Functions ---
+# Modified generate_event_description function
 def generate_event_description(title, category, date=None, venue=None):
     prompt = f"Generate a concise and exciting description for {title} in the {category} category. Highlight the appeal for attendees."
     if date and venue:
@@ -419,16 +430,18 @@ def generate_event_description(title, category, date=None, venue=None):
     else:
         prompt += " in an unspecified location."
     try:
-        response = co.generate(
-            model="command",
-            prompt=prompt,
+        response = co.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that generates exciting event descriptions."},
+                {"role": "user", "content": prompt}
+            ],
             max_tokens=150,
-            temperature=0.7,
-            num_generations=1
+            temperature=0.7
         )
-        return response.generations[0].text.strip()
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"Cohere generation error: {e}")
+        logger.error(f"Groq generation error: {e}")
         return ""
 
 def add_user(name, email, interests):
